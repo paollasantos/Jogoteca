@@ -1,12 +1,17 @@
-from flask import Flask, render_template, request, redirect, session, flash, url_for  
+from distutils.command.upload import upload
+from MySQLdb import Timestamp
+from flask import Flask, render_template, request, redirect, session, flash, url_for, send_from_directory
 
 from models import Jogo, Usuario
-from dao import JogoDao
+from dao import JogoDao, UsuarioDao
 from flask_mysqldb import MySQL
+import os
+import time
 
 
 app = Flask(__name__)
 app.secret_key = 'alura'
+
 
 app.config['MYSQL_HOST'] = "127.0.0.1"
 app.config['MYSQL_USER'] = "root"
@@ -14,29 +19,15 @@ app.config['MYSQL_PASSWORD'] = "MYSQL"
 app.config['MYSQL_DB'] = "jogoteca"
 app.config['MYSQL_PORT'] = 3306
 
+app.config['UPLOAD_PATH'] = os.path.dirname(os.path.abspath(__file__)) + '/uploads'
+
 db = MySQL(app)
-
 Jogo_dao = JogoDao(db)
-
-# nome de classe começa sempre com a primeira letra maiuscula
-
-jogo1= Jogo('GTA V', 'Ação/Aventura' , 'PC')
-jogo2= Jogo('FIFA' , 'Futebol' , 'Xbox one')
-jogo3= Jogo('Mortal Kombat' , 'Luta' , 'PS2')
-lista = [jogo1 , jogo2 , jogo3]
-
-
-usuario1 = Usuario('Paola Santos', 'PS', 'santos10')
-usuario2 = Usuario('Bruno Moreira', 'BM', 'moreira10')
-usuario3 = Usuario('Lennon Lima', 'LL', 'lennon123')
-
-usuarios = {usuario1.nickname : usuario1,
-            usuario2.nickname : usuario2,
-            usuario3.nickname : usuario3}
-
+usuario_dao = UsuarioDao(db)
 
 @app.route("/")
 def index():
+    lista =Jogo_dao.listar()
     return render_template('lista.html', titulo='Jogos', jogos=lista)
 
 @app.route("/novo")
@@ -51,7 +42,50 @@ def criar():
     categoria = request.form['categoria']
     console = request.form['console']
     jogo = Jogo(nome,categoria,console)
+    jogo = Jogo_dao.salvar(jogo)
+
+    arquivo = request.files['arquivo']
+    upload_path = app.config['UPLOAD_PATH']
+    Timestamp = time.time()
+    arquivo.save(f'{upload_path}/capa{jogo.id}-{Timestamp}.jpg')
+    return redirect(url_for('index'))
+
+@app.route('/editar/<int:id>')
+def editar(id):
+    if 'usuario_logado' not in session or session['usuario_logado'] == None:
+        return redirect(url_for('login', proxima=url_for('editar')))
+    jogo = Jogo_dao.busca_por_id(id)
+    nome_imagem = recupera_imagem(id)
+    return render_template('editar.html', titulo='Editando Jogo', jogo = jogo,  capa_jogo=nome_imagem or 'capa_padrao.jpg')
+
+def recupera_imagem(id):
+    for nome_arquivo in os.listdir(app.config['UPLOAD_PATH']):
+        if f'capa{id}' in nome_arquivo:
+            return nome_arquivo
+
+def deleta_arquivo(id):
+    arquivo = recupera_imagem(id)
+    os.remove(os.path.join(app.config['UPLOAD_PATH'], arquivo))
+
+@app.route('/atualizar', methods=['POST',])
+def atualizar():
+    nome = request.form['nome']
+    categoria = request.form['categoria']
+    console = request.form['console']
+    jogo = Jogo(nome,categoria,console, id=request.form['id'])
+
+    arquivo = request.files['arquivo']
+    upload_path = app.config['UPLOAD_PATH']
+    timestamp = time.time()
+    deleta_arquivo(jogo.id)
+    arquivo.save(f'{upload_path}/capa{jogo.id}-{timestamp}.jpg')
     Jogo_dao.salvar(jogo)
+    return redirect(url_for('index'))
+    
+@app.route('/deletar/<int:id>')
+def deletar(id):
+    Jogo_dao.deletar(id)
+    flash('O jogo foi removido com sucesso!')
     return redirect(url_for('index'))
 
 @app.route('/login')
@@ -59,18 +93,23 @@ def login():
     proxima = request.args.get('proxima')
     return render_template('login.html', proxima=proxima)
 
-@app.route('/autenticar', methods=['POST'])
+
+@app.route('/autenticar', methods=['POST', ])
 def autenticar():
-    if request.form['usuario'] in usuarios:
-        usuario = usuarios[request.form['usuario']]
-        if request.form['senha'] == usuario.senha:
-            session['usuario_logado'] = usuario.nickname
-            flash(usuario.nome + ' logado com sucesso!')
+    usuario = usuario_dao.buscar_por_id(request.form['usuario'])
+    if usuario:
+        if usuario.senha == request.form['senha']:
+            session['usuario_logado'] = usuario.nome
+            flash(usuario.nome + ' logou com sucesso!')
             proxima_pagina = request.form['proxima']
             return redirect(proxima_pagina)
-    else: 
-        flash('usuário não logado')
-        return redirect(url_for('login'))  
+        else:
+            flash('Não logado, tente denovo!')
+            return redirect(url_for('login'))
+    else:
+        flash('Não logado, tente denovo!')
+        return redirect(url_for('login'))
+
 
 @app.route('/logout')
 def logout():
@@ -78,4 +117,9 @@ def logout():
     flash('logout efetuado com sucesso!') 
     return redirect(url_for('index'))
 
+
+@app.route('/uploads/<nome_arquivo>')
+def imagem(nome_arquivo):
+    return send_from_directory('uploads', nome_arquivo)
+    
 app.run(debug = True)
